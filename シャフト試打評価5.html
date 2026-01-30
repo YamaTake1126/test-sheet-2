@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>ゴルフクラブ評価シート（スマホ対応）</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+body { font-family: system-ui, sans-serif; margin: 8px; background:#f2f2f2; }
+h1 { font-size:20px; text-align:center; margin-bottom:12px; }
+
+button { font-size:16px; padding:8px 12px; margin:4px; border-radius:4px; cursor:pointer; }
+.card { background:#fff; border-radius:8px; padding:10px; margin-bottom:12px; box-shadow:0 1px 3px rgba(0,0,0,.1); }
+
+.table-wrapper { overflow-x:auto; }
+table { width:100%; border-collapse: collapse; table-layout: fixed; }
+th, td { border:1px solid #ccc; padding:6px; font-size:14px; vertical-align: middle; }
+th { background:#eee; }
+th:first-child, td:first-child { font-size:16px; font-weight:bold; }
+.meaning { font-size:16px; color:#444; white-space: normal; word-break: break-word; max-width:160px; vertical-align: middle; }
+
+.header { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; }
+.topbox { background:#fafafa; border:1px solid #ddd; border-radius:6px; padding:8px; margin-bottom:8px; }
+
+.input-with-voice { display:flex; align-items:center; gap:4px; margin-top:4px; }
+.input-with-voice button { flex:0 0 auto; font-size:16px; padding:6px 10px; height:36px; border-radius:4px; }
+.input-with-voice input[type="text"], .input-with-voice input[type="number"] { flex:1; font-size:16px; padding:6px; box-sizing:border-box; }
+
+/* 折りたたみ用 */
+.sample-content { transition: max-height 0.3s ease, padding 0.3s ease, margin 0.3s ease; overflow: hidden; max-height: 2000px; }
+.sample-content.collapsed { max-height:0; padding:0; margin:0; }
+
+@media (max-width:600px){
+  th, td{ font-size:13px; padding:4px; }
+  button{ font-size:14px; padding:6px 8px; margin:2px; }
+  .meaning{ max-width:120px; font-size:14px; }
+  .input-with-voice input[type="text"], .input-with-voice input[type="number"]{ font-size:14px; padding:4px; }
+}
+</style>
+</head>
+<body>
+
+<h1>ゴルフクラブ評価（CSV出力対応）</h1>
+
+<div class="topbox">
+  評価者名（必須）
+  <div class="input-with-voice">
+    <button onclick="voiceInput('evaluator')">🎤</button>
+    <input type="text" id="evaluator" placeholder="例：オノフ 次郎" oninput="saveData()">
+  </div>
+</div>
+
+<div class="topbox">
+  <strong>シート作成者用</strong><br>
+  <button onclick="setEditMode()">🔓 編集モード</button>
+  <button onclick="setEvalMode()">🔒 評価モード（ロック）</button>
+</div>
+
+<button onclick="addSample()">＋ サンプル追加</button>
+<button onclick="exportCSV()">📄 CSV出力</button>
+<button onclick="clearData()">🗑 データ削除</button>
+
+<div id="samples"></div>
+
+<script>
+// --- 既存設定 ---
+const STORAGE_KEY = "golf_eval_v2";
+const MODE_KEY = "golf_eval_mode";
+function setEditMode(){ localStorage.setItem(MODE_KEY, "edit"); applyMode(); }
+function setEvalMode(){ if(!confirm("サンプル名をロックして評価モードに切り替えますか？")) return; localStorage.setItem(MODE_KEY, "eval"); applyMode(); }
+function getMode(){ return localStorage.getItem(MODE_KEY) || "edit"; }
+function applyMode(){
+  const isEval = getMode() === "eval";
+  document.querySelectorAll(`[id$="_name"]`).forEach(inp=>{ inp.disabled = isEval; });
+  document.querySelectorAll("button").forEach(btn=>{
+    const txt = btn.textContent;
+    if(txt.includes("サンプル追加") || txt.includes("サンプル削除") || txt.includes("データ削除")){
+      btn.style.display = isEval ? "none" : "";
+    }
+  });
+}
+
+const items = [
+ {key:"dist", label:"飛距離", meaning:"1:飛ばない / 5:よく飛ぶ"},
+ {key:"easy", label:"打ちやすさ", meaning:"1:難しい / 5:非常に易しい"},
+ {key:"up", label:"上り易さ", meaning:"1:上がらない / 5:非常に上がる"},
+ {key:"launch", label:"打ち出し(高低)", meaning:"1:低い / 5:高い"},
+ {key:"traj", label:"弾道（昇降軌道）", meaning:"1:吹ける / 5:強い"},
+ {key:"dir", label:"方向性", meaning:"1:悪い / 5:非常に良い"},
+ {key:"dir_launch_ref", label:"打ち出し（左右）", meaning:"5:左 / 4:やや左 / 3:中 / 2:やや右 / 1:右"},
+ {key:"dir_traj_ref", label:"弾道（サイド）", meaning:"5:フック / 4:弱フック / 3:ストレート / 2:弱スライス / 1:スライス"},
+ {key:"meet", label:"ミート率", meaning:"1:悪い / 5:良い"},
+ {key:"swing", label:"振りやすさ", meaning:"1:振りにくい / 5:振りやすい"},
+ {key:"flex", label:"フレックス", meaning:"1:柔らかい / 5:硬い"},
+ {key:"balance", label:"バランス", meaning:"1:軽い / 5:重い"},
+ {key:"grip", label:"グリップ径", meaning:"1:細い / 5:太い"},
+ {key:"rank", label:"順位", meaning:"数字が大きいほど順位が悪い"},
+ {key:"comment", label:"フリーコメント", meaning:"自由記述"}
+];
+
+let sampleCount = 0;
+
+// 折りたたみトグル
+function toggleSample(btn){
+  const content = btn.closest(".card").querySelector(".sample-content");
+  const collapsed = content.classList.toggle("collapsed");
+  btn.textContent = collapsed ? "▶" : "▼";
+}
+
+// サンプル追加
+function addSample(data=null){
+  sampleCount++;
+  const index = sampleCount;
+  const wrap = document.createElement("div");
+  wrap.className = "card";
+  wrap.dataset.index = index;
+  const sampleName = data?.name ?? "";
+
+  wrap.innerHTML = `
+    <div class="header">
+      <strong>サンプル ${index}</strong>
+      <button onclick="toggleSample(this)">▼</button>
+    </div>
+
+    <div class="sample-content">
+      <div class="topbox">
+        サンプル名（必須）
+        <div class="input-with-voice">
+          <button onclick="voiceInput('s${index}_name')">🎤</button>
+          <input type="text" id="s${index}_name" placeholder="例：24AKA 10.5 TATAKI50" value="${sampleName}" oninput="saveData()">
+        </div>
+      </div>
+
+      <div class="table-wrapper">
+        <table>
+          <tr><th>項目</th><th>入力</th><th>目安</th></tr>
+${items.map(i=>{
+  const id = `s${index}_${i.key}`;
+  const value = data?.[i.key] ?? "";
+  const isRank = i.key === "rank";
+  const isComment = i.key === "comment";
+  return `<tr>
+    <td>${i.label}</td>
+    <td>
+      <div class="input-with-voice">
+        <button onclick="voiceInput('${id}')">🎤</button>
+        ${
+          isComment
+          ? `<input type="text" id="${id}" value="${value}" placeholder="例：捕まりが良く叩ける印象" oninput="saveData()">`
+          : `<input type="number" id="${id}" min="1" ${isRank ? 'step="1" inputmode="numeric"' : 'max="5" step="0.1" inputmode="decimal"'} value="${value}" oninput="saveData()">`
+        }
+      </div>
+    </td>
+    <td class="meaning">${i.meaning}</td>
+  </tr>`;
+}).join("")}
+        </table>
+      </div>
+      <button onclick="removeSample(this)">サンプル削除</button>
+    </div>
+  `;
+  document.getElementById("samples").appendChild(wrap);
+  saveData();
+}
+
+function removeSample(btn){ btn.closest(".card").remove(); saveData(); }
+
+// 音声入力
+function voiceInput(id){
+  if(!('webkitSpeechRecognition' in window)){ alert("このブラウザは音声入力に対応していません"); return; }
+  const rec = new webkitSpeechRecognition();
+  rec.lang = "ja-JP"; rec.start();
+  rec.onresult = e => {
+    let text = e.results[0][0].transcript.trim();
+    const el = document.getElementById(id);
+    const numMap = {"ゼロ":"0","れい":"0","零":"0","zero":"0","いち":"1","一":"1","one":"1","ワン":"1","に":"2","二":"2","two":"2","ツー":"2","さん":"3","三":"3","three":"3","スリー":"3","よん":"4","四":"4","し":"4","four":"4","フォー":"4","ご":"5","五":"5","five":"5","ファイブ":"5"};
+    const alphaMap = {"エー":"A","エイ":"A","ビー":"B","シー":"C","ディー":"D","イー":"E","エフ":"F","ジー":"G","エイチ":"H","アイ":"I","ジェー":"J","ケー":"K","エル":"L","エム":"M","エヌ":"N","オー":"O","ピー":"P","キュー":"Q","アール":"R","エス":"S","ティー":"T","ユー":"U","ブイ":"V","ダブリュー":"W","エックス":"X","ワイ":"Y","ズィー":"Z","ゼット":"Z"};
+    Object.keys(numMap).forEach(k=>{ text=text.replace(new RegExp(k,"gi"),numMap[k]); });
+    Object.keys(alphaMap).forEach(k=>{ text=text.replace(new RegExp(k,"g"),alphaMap[k]); });
+    if(el.type==="number"){ el.value=text.replace(/[^\d]/g,''); } else { el.value=text; }
+    saveData();
+  };
+}
+
+// 保存・復元・CSV・全削除
+function saveData(){
+  const data={evaluator:document.getElementById("evaluator").value,samples:[]};
+  document.querySelectorAll(".card").forEach(card=>{
+    const obj={name: card.querySelector(`[id$="_name"]`).value};
+    items.forEach(i=>{ obj[i.key]=card.querySelector(`[id$='_${i.key}']`).value; });
+    data.samples.push(obj);
+  });
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+}
+
+function loadData(){
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if(!raw){ addSample(); return; }
+  const data = JSON.parse(raw);
+  document.getElementById("evaluator").value = data.evaluator || "";
+  if(data.samples.length===0){ addSample(); } else { data.samples.forEach(d=>addSample(d)); }
+  applyMode();
+}
+
+function exportCSV(){
+  const evaluator=document.getElementById("evaluator").value.trim();
+  if(!evaluator){ alert("評価者名を入力してください。"); return; }
+  const rows=[];
+  const header=["評価者名","日時","サンプル番号","サンプル名",...items.map(i=>i.label)];
+  rows.push(header);
+  const now = new Date().toLocaleString();
+  document.querySelectorAll(".card").forEach((card,idx)=>{
+    const row=[evaluator,now,idx+1,card.querySelector(`[id$="_name"]`).value];
+    items.forEach(i=>{ row.push(card.querySelector(`[id$='_${i.key}']`).value); });
+    rows.push(row);
+  });
+  const csvBody=rows.map(r=>`"${r.join('","')}"`).join("\n");
+  const csv="\uFEFF"+csvBody;
+  const blob=new Blob([csv], {type:"text/csv;charset=utf-8;"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  const ts=new Date().toISOString().replace(/[:.]/g,"-");
+  a.href=url;
+  a.download=`golf_eval_${evaluator}_${ts}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function clearData(){ if(confirm("保存データをすべて削除しますか？")){ localStorage.removeItem(STORAGE_KEY); location.reload(); } }
+
+loadData();
+</script>
+
+</body>
+</html>
+
